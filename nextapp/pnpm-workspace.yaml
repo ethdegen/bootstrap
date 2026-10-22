@@ -1,0 +1,12 @@
+# pnpm settings for the Next App. npm reads the equivalent `allowScripts`
+# field in package.json; keep both lists in sync.
+#
+# pnpm (and npm 12+) only run dependency install scripts that were reviewed:
+# - prisma / @prisma/engines: Node version check and engine download
+# - unrs-resolver: native binding fallback used by eslint-config-next
+# - msw: copies a service worker into a `public` dir; not used here
+allowBuilds:
+    "@prisma/engines": true
+    msw: false
+    prisma: true
+    unrs-resolver: true

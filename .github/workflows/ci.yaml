@@ -1,0 +1,138 @@
+name: CI
+on:
+    push:
+    pull_request:
+    workflow_dispatch:
+
+concurrency:
+    group: ci-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
+jobs:
+    fastapi:
+        runs-on: ubuntu-latest
+        container: python:3.12
+
+        defaults:
+            run:
+                shell: bash
+                working-directory: fastapi
+
+        steps:
+            - name: Git Checkout
+              uses: actions/checkout@v4
+            - name: Install Poetry
+              uses: abatilo/actions-poetry@v2
+            - name: Poetry Install
+              run: poetry install
+            - name: Playwright Install
+              run: poetry run playwright install --with-deps chromium
+            - name: Pytest
+              run: poetry run pytest
+
+    nextapp:
+        name: nextapp (${{ matrix.package-manager }})
+        runs-on: ubuntu-latest
+        container: node:24
+
+        strategy:
+            fail-fast: false
+            matrix:
+                package-manager: [npm, pnpm]
+
+        defaults:
+            run:
+                shell: bash
+                working-directory: nextapp
+
+        env:
+            PM: ${{ matrix.package-manager }}
+
+        steps:
+            - name: Git Checkout
+              uses: actions/checkout@v4
+            - name: Setup pnpm
+              if: matrix.package-manager == 'pnpm'
+              run: npm install --global pnpm@12.14.0
+            - name: Install
+              run: if [ "$PM" = pnpm ]; then pnpm install --no-frozen-lockfile; else npm install; fi
+            - name: Prisma Validate
+              run: $PM run db:validate
+            - name: Prisma Format
+              run: $PM exec -- prisma format --check
+            - name: Prisma Generate
+              run: $PM run db:generate
+            - name: Run Test
+              run: $PM run test
+            - name: Run Lint
+              run: $PM run lint
+            - name: Run Build
+              run: $PM run build
+
+    nextapp_e2e:
+        name: nextapp_e2e (${{ matrix.package-manager }})
+        runs-on: ubuntu-latest
+
+        strategy:
+            fail-fast: false
+            matrix:
+                package-manager: [npm, pnpm]
+
+        defaults:
+            run:
+                shell: bash
+                working-directory: nextapp
+
+        env:
+            CI: "true"
+            DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+            PM: ${{ matrix.package-manager }}
+
+        services:
+            database:
+                image: pgvector/pgvector:pg18-trixie
+                ports:
+                    - 5432:5432
+                env:
+                    POSTGRES_PASSWORD: postgres
+                options: >-
+                    --health-cmd pg_isready
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+
+        steps:
+            - name: Git Checkout
+              uses: actions/checkout@v4
+            - name: Setup NodeJS
+              uses: actions/setup-node@v4
+              with:
+                  node-version-file: nextapp/.nvmrc
+            - name: Setup pnpm
+              if: matrix.package-manager == 'pnpm'
+              run: npm install --global pnpm@12.14.0
+            - name: Install
+              run: if [ "$PM" = pnpm ]; then pnpm install --no-frozen-lockfile; else npm install; fi
+            - name: Prisma Generate
+              run: $PM run db:generate
+            - name: Prisma Migrate Deploy
+              run: $PM run db:deploy
+            - name: Cache Playwright Browsers
+              uses: actions/cache@v4
+              with:
+                  path: ~/.cache/ms-playwright
+                  key: playwright-${{ runner.os }}-${{ hashFiles('nextapp/package.json') }}
+            - name: Playwright Install
+              run: $PM exec -- playwright install --with-deps chromium firefox webkit
+            - name: Playwright Test
+              run: $PM run test:e2e
+            - name: Upload Playwright Report
+              uses: actions/upload-artifact@v4
+              if: ${{ !cancelled() }}
+              with:
+                  name: playwright-report-${{ matrix.package-manager }}
+                  path: nextapp/playwright-report/
+                  retention-days: 7
